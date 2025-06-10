@@ -8,12 +8,12 @@ use vulkano::device::{Device, DeviceExtensions, DeviceCreateInfo};
 use vulkano::device::physical::PhysicalDevice;
 use vulkano::device::QueueCreateInfo;
 use vulkano::image::view::ImageView;
-use vulkano::image::{AttachmentImage, ImageUsage};
+use vulkano::image::AttachmentImage;
 use vulkano::format::Format;
 use vulkano::instance::{Instance, InstanceExtensions, InstanceCreateInfo};
 use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint};
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
-use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
+use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::graphics::depth_stencil::DepthStencilState;
@@ -64,6 +64,7 @@ unsafe impl Pod for vs::ty::Data {}
 struct Vertex { position: [f32; 3], color: [f32; 3] }
 vulkano::impl_vertex!(Vertex, position, color);
 
+#[allow(unused_assignments)]
 fn main() {
     // Цикл событий и инстанс Vulkan
     let event_loop = EventLoop::new();
@@ -157,6 +158,18 @@ fn main() {
         .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
         .build(device.clone()).unwrap();
 
+    // Графический конвейер для линий (рёбер куба)
+    let line_pipeline = GraphicsPipeline::start()
+        .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
+        .vertex_shader(vs.entry_point("main").unwrap(), ())
+        .input_assembly_state(InputAssemblyState::new().topology(PrimitiveTopology::LineList))
+        .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+        .fragment_shader(fs.entry_point("main").unwrap(), ())
+        .rasterization_state(RasterizationState::new())
+        .depth_stencil_state(DepthStencilState::simple_depth_test())
+        .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+        .build(device.clone()).unwrap();
+
     // Вершины и индексы куба
     let vertices = [
         Vertex { position: [-0.5, -0.5, -0.5], color: [1.0, 0.0, 0.0] },
@@ -171,6 +184,22 @@ fn main() {
     let vertex_buffer = CpuAccessibleBuffer::from_iter(
         device.clone(), BufferUsage::vertex_buffer(), false, vertices.iter().cloned()
     ).unwrap();
+    
+    // Вершины для линий (рёбер) - с чёрным цветом для контраста
+    let line_vertices = [
+        Vertex { position: [-0.5, -0.5, -0.5], color: [0.0, 0.0, 0.0] },
+        Vertex { position: [ 0.5, -0.5, -0.5], color: [0.0, 0.0, 0.0] },
+        Vertex { position: [ 0.5,  0.5, -0.5], color: [0.0, 0.0, 0.0] },
+        Vertex { position: [-0.5,  0.5, -0.5], color: [0.0, 0.0, 0.0] },
+        Vertex { position: [-0.5, -0.5,  0.5], color: [0.0, 0.0, 0.0] },
+        Vertex { position: [ 0.5, -0.5,  0.5], color: [0.0, 0.0, 0.0] },
+        Vertex { position: [ 0.5,  0.5,  0.5], color: [0.0, 0.0, 0.0] },
+        Vertex { position: [-0.5,  0.5,  0.5], color: [0.0, 0.0, 0.0] },
+    ];
+    let line_vertex_buffer = CpuAccessibleBuffer::from_iter(
+        device.clone(), BufferUsage::vertex_buffer(), false, line_vertices.iter().cloned()
+    ).unwrap();
+    
     let indices: Vec<u16> = vec![
         0,1,2, 2,3,0, // задняя грань
         4,5,6, 6,7,4, // передняя грань
@@ -183,15 +212,59 @@ fn main() {
         device.clone(), BufferUsage::index_buffer(), false, indices.iter().cloned()
     ).unwrap();
 
+    // Индексы для рёбер куба (линии)
+    let line_indices: Vec<u16> = vec![
+        // Задняя грань
+        0,1, 1,2, 2,3, 3,0,
+        // Передняя грань  
+        4,5, 5,6, 6,7, 7,4,
+        // Соединяющие рёбра
+        0,4, 1,5, 2,6, 3,7,
+    ];
+    let line_index_buffer = CpuAccessibleBuffer::from_iter(
+        device.clone(), BufferUsage::index_buffer(), false, line_indices.iter().cloned()
+    ).unwrap();
+
     // Пул униформ-буферов
     let uniform_buffer = CpuBufferPool::<vs::ty::Data>::uniform_buffer(device.clone());
     let rotation_start = Instant::now();
     let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
+    let mut recreate_swapchain = false;
+    let mut swapchain = swapchain;
+    let mut images = images;
+    let mut framebuffers = framebuffers;
+    let mut depth_buffer = depth_buffer;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
         match event {
+            Event::WindowEvent { event: WindowEvent::Resized(_), .. } => {
+                recreate_swapchain = true;
+            }
             Event::RedrawEventsCleared => {
+                if recreate_swapchain {
+                    let dimensions: [u32; 2] = surface.window().inner_size().into();
+                    let (new_swapchain, new_images) = match swapchain.recreate(SwapchainCreateInfo {
+                        image_extent: dimensions,
+                        ..swapchain.create_info()
+                    }) {
+                        Ok(r) => r,
+                        Err(vulkano::swapchain::SwapchainCreationError::ImageExtentNotSupported { .. }) => return,
+                        Err(e) => panic!("Ошибка пересоздания swapchain: {:?}", e)
+                    };
+                    swapchain = new_swapchain;
+                    images = new_images;
+                    depth_buffer = AttachmentImage::transient(device.clone(), swapchain.image_extent(), Format::D16_UNORM).unwrap();
+                    framebuffers = images.iter().map(|image| {
+                        let view = ImageView::new_default(image.clone()).unwrap();
+                        let depth_view = ImageView::new_default(depth_buffer.clone()).unwrap();
+                        Framebuffer::new(
+                            render_pass.clone(), FramebufferCreateInfo { attachments: vec![view, depth_view], ..Default::default() }
+                        ).unwrap()
+                    }).collect::<Vec<_>>();
+                    recreate_swapchain = false;
+                }
+
                 previous_frame_end.as_mut().unwrap().cleanup_finished();
                 let elapsed = rotation_start.elapsed().as_secs_f32();
                 let aspect = swapchain.image_extent()[0] as f32 / swapchain.image_extent()[1] as f32;
@@ -204,21 +277,40 @@ fn main() {
                 let set = PersistentDescriptorSet::new(
                     layout.clone(), [WriteDescriptorSet::buffer(0, uniform_subbuffer)]
                 ).unwrap();
+                let set_clone = set.clone();
 
-                let (image_index, _suboptimal, acquire_future) =
-                    acquire_next_image(swapchain.clone(), None).unwrap();
+                let (image_index, suboptimal, acquire_future) = match acquire_next_image(swapchain.clone(), None) {
+                    Ok(r) => r,
+                    Err(vulkano::swapchain::AcquireError::OutOfDate) => {
+                        recreate_swapchain = true;
+                        return;
+                    }
+                    Err(e) => panic!("Ошибка получения изображения: {:?}", e)
+                };
+                
+                if suboptimal {
+                    recreate_swapchain = true;
+                }
+
                 let mut builder = AutoCommandBufferBuilder::primary(
                     device.clone(), queue.family(), CommandBufferUsage::OneTimeSubmit
                 ).unwrap();
                 builder.begin_render_pass(
                     framebuffers[image_index].clone(), SubpassContents::Inline, vec![[0.0,0.0,0.1,1.0].into(), 1.0.into()]
                 ).unwrap()
+                    // Сначала рисуем треугольники
                     .bind_pipeline_graphics(pipeline.clone())
                     .set_viewport(0, [Viewport { origin: [0.0, 0.0], dimensions: [swapchain.image_extent()[0] as f32, swapchain.image_extent()[1] as f32], depth_range: 0.0..1.0 }])
                     .bind_vertex_buffers(0, vertex_buffer.clone())
                     .bind_index_buffer(index_buffer.clone())
                     .bind_descriptor_sets(PipelineBindPoint::Graphics, pipeline.layout().clone(), 0, set)
                     .draw_indexed(indices.len() as u32, 1, 0, 0, 0).unwrap()
+                    // Теперь рисуем линии (рёбра)
+                    .bind_pipeline_graphics(line_pipeline.clone())
+                    .bind_vertex_buffers(0, line_vertex_buffer.clone())
+                    .bind_index_buffer(line_index_buffer.clone())
+                    .bind_descriptor_sets(PipelineBindPoint::Graphics, line_pipeline.layout().clone(), 0, set_clone)
+                    .draw_indexed(line_indices.len() as u32, 1, 0, 0, 0).unwrap()
                     .end_render_pass().unwrap();
                 let command_buffer = builder.build().unwrap();
 
@@ -226,8 +318,20 @@ fn main() {
                     .join(acquire_future)
                     .then_execute(queue.clone(), command_buffer).unwrap()
                     .then_swapchain_present(queue.clone(), swapchain.clone(), image_index)
-                    .then_signal_fence_and_flush().unwrap();
-                previous_frame_end = Some(future.boxed());
+                    .then_signal_fence_and_flush();
+                match future {
+                    Ok(future) => {
+                        previous_frame_end = Some(future.boxed());
+                    }
+                    Err(vulkano::sync::FlushError::OutOfDate) => {
+                        recreate_swapchain = true;
+                        previous_frame_end = Some(sync::now(device.clone()).boxed());
+                    }
+                    Err(e) => {
+                        println!("Ошибка отображения: {:?}", e);
+                        previous_frame_end = Some(sync::now(device.clone()).boxed());
+                    }
+                }
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
                 *control_flow = ControlFlow::Exit;
