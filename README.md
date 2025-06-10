@@ -25,6 +25,7 @@
   ```bash
   sudo pacman -S vulkan-headers vulkan-icd-loader mesa-vulkan-drivers
   ```
+  (или `nvidia-utils` вместо `mesa-vulkan-drivers` для NVIDIA)
 - Rust toolchain
 
 ## Запуск
@@ -37,11 +38,6 @@ cargo run
 env WAYLAND_DISPLAY= GDK_BACKEND=x11 cargo run
 ```
 
-## Управление
-
-- **ESC / Закрытие окна** - выход из приложения
-- **Изменение размера окна** - автоматическая адаптация рендеринга
-- **F11 / Полный экран** - поддерживается без ошибок
 
 ## Структура проекта
 
