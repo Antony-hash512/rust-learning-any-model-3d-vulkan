@@ -83,7 +83,7 @@ fn main() {
         ..Default::default()
     }).expect("Не удалось создать Vulkan-инстанс");
     let surface = WindowBuilder::new()
-        .with_title("Вращающийся куб на Vulkan")
+        .with_title("3D модель на Vulkan")
         .build_vk_surface(&event_loop, instance.clone())
         .unwrap();
 
