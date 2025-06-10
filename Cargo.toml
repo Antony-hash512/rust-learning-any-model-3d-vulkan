@@ -10,3 +10,4 @@ vulkano-win = { version = "0.29", features = ["winit_"] }
 winit = "0.26"
 cgmath = "0.18"
 bytemuck = { version = "1.14", features = ["derive"] }
+tobj = "3"

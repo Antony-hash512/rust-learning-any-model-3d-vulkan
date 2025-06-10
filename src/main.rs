@@ -27,6 +27,8 @@ use winit::window::WindowBuilder;
 use cgmath::{Matrix4, Point3, Vector3, Rad, perspective};
 use bytemuck::{Pod, Zeroable};
 use vulkano::swapchain::acquire_next_image;
+use std::path::Path;
+use tobj;
 
 // Шейдеры на GLSL, компилируемые в SPIR-V во время сборки
 mod vs {
@@ -34,12 +36,12 @@ mod vs {
         ty: "vertex",
         src: "#version 450
 layout(location = 0) in vec3 position;
-layout(location = 1) in vec3 color;
-layout(location = 0) out vec3 frag_color;
-layout(set = 0, binding = 0) uniform Data { mat4 transform; } uniforms;
+layout(location = 1) in vec3 normal;
+layout(location = 0) out vec3 v_normal;
+layout(set = 0, binding = 0) uniform Data { mat4 transform; mat4 model; } uniforms;
 void main() {
     gl_Position = uniforms.transform * vec4(position, 1.0);
-    frag_color = color;
+    v_normal = normalize((uniforms.model * vec4(normal, 0.0)).xyz);
 }"
     }
 }
@@ -48,9 +50,15 @@ mod fs {
     vulkano_shaders::shader! {
         ty: "fragment",
         src: "#version 450
-layout(location = 0) in vec3 frag_color;
+layout(location = 0) in vec3 v_normal;
 layout(location = 0) out vec4 f_color;
-void main() { f_color = vec4(frag_color, 1.0); }"
+void main() {
+    vec3 light_dir = normalize(vec3(1.0, 1.0, 1.0));
+    float diff = max(dot(normalize(v_normal), light_dir), 0.0);
+    vec3 gray = vec3(0.5);
+    vec3 color = gray * diff;
+    f_color = vec4(color, 1.0);
+}"
     }
 }
 
@@ -61,8 +69,8 @@ unsafe impl Pod for vs::ty::Data {}
 // Описание вершины: позиция и цвет
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
-struct Vertex { position: [f32; 3], color: [f32; 3] }
-vulkano::impl_vertex!(Vertex, position, color);
+struct Vertex { position: [f32; 3], normal: [f32; 3] }
+vulkano::impl_vertex!(Vertex, position, normal);
 
 #[allow(unused_assignments)]
 fn main() {
@@ -171,59 +179,21 @@ fn main() {
         .build(device.clone()).unwrap();
 
     // Вершины и индексы куба
-    let vertices = [
-        Vertex { position: [-0.5, -0.5, -0.5], color: [1.0, 0.0, 0.0] },
-        Vertex { position: [ 0.5, -0.5, -0.5], color: [0.0, 1.0, 0.0] },
-        Vertex { position: [ 0.5,  0.5, -0.5], color: [0.0, 0.0, 1.0] },
-        Vertex { position: [-0.5,  0.5, -0.5], color: [1.0, 1.0, 0.0] },
-        Vertex { position: [-0.5, -0.5,  0.5], color: [1.0, 0.0, 1.0] },
-        Vertex { position: [ 0.5, -0.5,  0.5], color: [0.0, 1.0, 1.0] },
-        Vertex { position: [ 0.5,  0.5,  0.5], color: [1.0, 1.0, 1.0] },
-        Vertex { position: [-0.5,  0.5,  0.5], color: [0.0, 0.0, 0.0] },
-    ];
-    let vertex_buffer = CpuAccessibleBuffer::from_iter(
-        device.clone(), BufferUsage::vertex_buffer(), false, vertices.iter().cloned()
-    ).unwrap();
-    
-    // Вершины для линий (рёбер) - с чёрным цветом для контраста
-    let line_vertices = [
-        Vertex { position: [-0.5, -0.5, -0.5], color: [0.0, 0.0, 0.0] },
-        Vertex { position: [ 0.5, -0.5, -0.5], color: [0.0, 0.0, 0.0] },
-        Vertex { position: [ 0.5,  0.5, -0.5], color: [0.0, 0.0, 0.0] },
-        Vertex { position: [-0.5,  0.5, -0.5], color: [0.0, 0.0, 0.0] },
-        Vertex { position: [-0.5, -0.5,  0.5], color: [0.0, 0.0, 0.0] },
-        Vertex { position: [ 0.5, -0.5,  0.5], color: [0.0, 0.0, 0.0] },
-        Vertex { position: [ 0.5,  0.5,  0.5], color: [0.0, 0.0, 0.0] },
-        Vertex { position: [-0.5,  0.5,  0.5], color: [0.0, 0.0, 0.0] },
-    ];
-    let line_vertex_buffer = CpuAccessibleBuffer::from_iter(
-        device.clone(), BufferUsage::vertex_buffer(), false, line_vertices.iter().cloned()
-    ).unwrap();
-    
-    let indices: Vec<u16> = vec![
-        0,1,2, 2,3,0, // задняя грань
-        4,5,6, 6,7,4, // передняя грань
-        0,1,5, 5,4,0, // нижняя грань
-        2,3,7, 7,6,2, // верхняя грань
-        1,2,6, 6,5,1, // правая грань
-        0,3,7, 7,4,0, // левая грань
-    ];
-    let index_buffer = CpuAccessibleBuffer::from_iter(
-        device.clone(), BufferUsage::index_buffer(), false, indices.iter().cloned()
-    ).unwrap();
-
-    // Индексы для рёбер куба (линии)
-    let line_indices: Vec<u16> = vec![
-        // Задняя грань
-        0,1, 1,2, 2,3, 3,0,
-        // Передняя грань  
-        4,5, 5,6, 6,7, 7,4,
-        // Соединяющие рёбра
-        0,4, 1,5, 2,6, 3,7,
-    ];
-    let line_index_buffer = CpuAccessibleBuffer::from_iter(
-        device.clone(), BufferUsage::index_buffer(), false, line_indices.iter().cloned()
-    ).unwrap();
+    let obj_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/models3d/monkey.obj");
+    let (models, _) = tobj::load_obj(obj_path.to_str().unwrap(), &tobj::LoadOptions::default()).expect("Не удалось загрузить OBJ");
+    let mesh = &models[0].mesh;
+    let vertices: Vec<Vertex> = (0..mesh.positions.len()/3).map(|i| {
+        let pos = [mesh.positions[3*i], mesh.positions[3*i+1], mesh.positions[3*i+2]];
+        let norm = if mesh.normals.len() >= mesh.positions.len() {
+            [mesh.normals[3*i], mesh.normals[3*i+1], mesh.normals[3*i+2]]
+        } else {
+            [0.0, 0.0, 1.0]
+        };
+        Vertex { position: pos, normal: norm }
+    }).collect();
+    let indices: Vec<u32> = mesh.indices.iter().map(|&i| i as u32).collect();
+    let vertex_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::vertex_buffer(), false, vertices.iter().cloned()).unwrap();
+    let index_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::index_buffer(), false, indices.iter().cloned()).unwrap();
 
     // Пул униформ-буферов
     let uniform_buffer = CpuBufferPool::<vs::ty::Data>::uniform_buffer(device.clone());
@@ -271,7 +241,7 @@ fn main() {
                 let proj = perspective(Rad(std::f32::consts::FRAC_PI_2), aspect, 0.01, 100.0);
                 let view = Matrix4::look_at_rh(Point3::new(2.0,2.0,2.0), Point3::new(0.0,0.0,0.0), Vector3::unit_z());
                 let model = Matrix4::from_angle_y(Rad(elapsed));
-                let uniform_data = vs::ty::Data { transform: (proj * view * model).into() };
+                let uniform_data = vs::ty::Data { transform: (proj * view * model).into(), model: model.into() };
                 let uniform_subbuffer = uniform_buffer.next(uniform_data).unwrap();
                 let layout = pipeline.layout().set_layouts().get(0).unwrap();
                 let set = PersistentDescriptorSet::new(
@@ -305,12 +275,6 @@ fn main() {
                     .bind_index_buffer(index_buffer.clone())
                     .bind_descriptor_sets(PipelineBindPoint::Graphics, pipeline.layout().clone(), 0, set)
                     .draw_indexed(indices.len() as u32, 1, 0, 0, 0).unwrap()
-                    // Теперь рисуем линии (рёбра)
-                    .bind_pipeline_graphics(line_pipeline.clone())
-                    .bind_vertex_buffers(0, line_vertex_buffer.clone())
-                    .bind_index_buffer(line_index_buffer.clone())
-                    .bind_descriptor_sets(PipelineBindPoint::Graphics, line_pipeline.layout().clone(), 0, set_clone)
-                    .draw_indexed(line_indices.len() as u32, 1, 0, 0, 0).unwrap()
                     .end_render_pass().unwrap();
                 let command_buffer = builder.build().unwrap();
 
