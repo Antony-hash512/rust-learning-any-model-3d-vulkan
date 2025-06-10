@@ -1,0 +1,6 @@
+[package]
+name = "cube_3d_vulkan"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
