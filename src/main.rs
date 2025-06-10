@@ -14,7 +14,7 @@ use vulkano::instance::{Instance, InstanceExtensions, InstanceCreateInfo};
 use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint};
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
-use vulkano::pipeline::graphics::rasterization::RasterizationState;
+use vulkano::pipeline::graphics::rasterization::{RasterizationState, CullMode};
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::graphics::depth_stencil::DepthStencilState;
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, Subpass};
@@ -29,6 +29,7 @@ use bytemuck::{Pod, Zeroable};
 use vulkano::swapchain::acquire_next_image;
 use std::path::Path;
 use tobj;
+use tobj::LoadOptions;
 
 // Шейдеры на GLSL, компилируемые в SPIR-V во время сборки
 mod vs {
@@ -56,7 +57,8 @@ void main() {
     vec3 light_dir = normalize(vec3(1.0, 1.0, 1.0));
     float diff = max(dot(normalize(v_normal), light_dir), 0.0);
     vec3 gray = vec3(0.5);
-    vec3 color = gray * diff;
+    float ambient = 0.2;
+    vec3 color = gray * (ambient + diff * (1.0 - ambient));
     f_color = vec4(color, 1.0);
 }"
     }
@@ -161,7 +163,7 @@ fn main() {
         .input_assembly_state(InputAssemblyState::new())
         .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
         .fragment_shader(fs.entry_point("main").unwrap(), ())
-        .rasterization_state(RasterizationState::new())
+        .rasterization_state(RasterizationState::new().cull_mode(CullMode::None))
         .depth_stencil_state(DepthStencilState::simple_depth_test())
         .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
         .build(device.clone()).unwrap();
@@ -180,7 +182,8 @@ fn main() {
 
     // Вершины и индексы куба
     let obj_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/models3d/monkey.obj");
-    let (models, _) = tobj::load_obj(obj_path.to_str().unwrap(), &tobj::LoadOptions::default()).expect("Не удалось загрузить OBJ");
+    let load_options = LoadOptions { triangulate: true, single_index: true, ..Default::default() };
+    let (models, _) = tobj::load_obj(obj_path.to_str().unwrap(), &load_options).expect("Не удалось загрузить OBJ");
     let mesh = &models[0].mesh;
     let vertices: Vec<Vertex> = (0..mesh.positions.len()/3).map(|i| {
         let pos = [mesh.positions[3*i], mesh.positions[3*i+1], mesh.positions[3*i+2]];
@@ -241,7 +244,8 @@ fn main() {
                 let proj = perspective(Rad(std::f32::consts::FRAC_PI_2), aspect, 0.01, 100.0);
                 let view = Matrix4::look_at_rh(Point3::new(2.0,2.0,2.0), Point3::new(0.0,0.0,0.0), Vector3::unit_z());
                 let model = Matrix4::from_angle_y(Rad(elapsed));
-                let uniform_data = vs::ty::Data { transform: (proj * view * model).into(), model: model.into() };
+                let mv = view * model;
+                let uniform_data = vs::ty::Data { transform: (proj * mv).into(), model: mv.into() };
                 let uniform_subbuffer = uniform_buffer.next(uniform_data).unwrap();
                 let layout = pipeline.layout().set_layouts().get(0).unwrap();
                 let set = PersistentDescriptorSet::new(
